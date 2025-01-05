@@ -1,2 +1,7 @@
 matplotlib==3.2.2
 backtrader
+yfinance
+praw
+pytesseract
+schedule
+seaborn
