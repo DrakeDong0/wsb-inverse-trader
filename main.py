@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from datetime import datetime
 from dataclasses import dataclass
 from typing import List
+from graph import get_data
 from PIL import Image
 import backtrader as bt
 import praw
@@ -55,7 +56,7 @@ def check_ticker(ticker: str) -> bool:
 
 
 def extract_data(text, title: bool) -> SubmissionInfo:
-    ticker_pattern = r"\b(?!JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC|INC|CAD|USD|FHSA|TFSA|RRSP|RESP|MAX|YOLO|OMG|USA|OPEN|NOT|LTE|BY|ANY|NO|CALL|PUT|EXP|TRADE|MONEY|HELD|CLASS|YTD|POS|CST|BSS|UTC|GMT|PST|EST|CET|BST|IST|MST|JST|AEDT|ACDT|AWST)[A-Z]{2,5}\b"
+    ticker_pattern = r"\b(?!JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC|INC|CAD|USD|FHSA|TFSA|RRSP|RESP|MAX|YOLO|STOP|CLOSE|AND|LOSS|OMG|USA|OPEN|NOT|LTE|BY|ANY|NO|CALL|PUT|EXP|TRADE|MONEY|HELD|CLASS|YTD|POS|CST|BSS|UTC|GMT|PST|EST|CET|BST|IST|MST|JST|AEDT|ACDT|AWST)[A-Z]{2,5}\b"
     ticker_position = r"(?i)\b(call|put|\sC\s|\sP\s)\b"
 
     tickers = re.findall(ticker_pattern, text)
@@ -81,7 +82,7 @@ def main():
     image_only_counter, has_text = 0, 0
     json_data = []
 
-    for submission in subreddit.search(query=f'flair:"{gain_flair}"', sort="new", time_filter="year", limit=999):
+    for submission in subreddit.search(query=f'flair:"{gain_flair}"', sort="new", time_filter="month", limit=50):
         image_url = submission.url
         submission_data = None
         if submission.url.endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp')):
@@ -107,7 +108,7 @@ def main():
                     "position": submission_data.position
                 }
                 json_data.append(entry)
-        # print(f"URL: {submission.url}\n")
+        print(f"URL: {submission.url}\n")
 
     folder_path = './weekly_data'
     if not os.path.exists(folder_path):
@@ -123,7 +124,25 @@ def main():
     filename = os.path.join(folder_path, f'{current_date}.json')
     with open(filename, 'w') as file:
         json.dump(json_data, file, indent=4)
+    
+    filedata = get_data(current_date)
+    
+    ticker_count = {}
 
+    for item in json_data:
+        ticker = item['ticker']
+        position = item["position"]
+        if position == '':
+            continue
+
+        key = (ticker, position)
+        if key in ticker_count:
+            ticker_count[key] += 1
+        else:
+            ticker_count[key] = 1
+    print(ticker_count)
+    print(max(ticker_count, key=ticker_count.get))
+    
     print("image only: ", image_only_counter)
     print("has text too: ", has_text)
 
