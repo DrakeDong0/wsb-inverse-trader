@@ -5,9 +5,9 @@ import matplotlib.pyplot as plt
 
 
 def get_data(file_name):
-    folder_path = './weekly_data'
+    folder_path = './monthly_data'
     if not os.path.exists(folder_path):
-        print("weekly_data folder does not exist")
+        print("monthly_data folder does not exist")
         return
     datafiles = [f for f in os.listdir(folder_path) if os.path.isfile(
         os.path.join(folder_path, f))]
@@ -20,7 +20,7 @@ def get_data(file_name):
         print("file is not in weekly data")
         return
 
-    with open(f'./weekly_data/{file_name}', 'r') as file:
+    with open(f'./monthly_data/{file_name}', 'r') as file:
         json_data = json.load(file)
 
     return json_data
