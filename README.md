@@ -66,3 +66,14 @@ Copy .env.example to .env and fill in your Reddit API credentials.
 
 python main.py
 
+To see the frequency of the scrapped data, run:
+
+```
+python graph.py graph <data file>
+```
+or to see frequency independent of positions:
+
+```
+python graph.py graph_freq <data_file>
+```
+
