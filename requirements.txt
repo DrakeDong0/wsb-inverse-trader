@@ -5,3 +5,7 @@ praw
 pytesseract
 schedule
 seaborn
+python-dotenv
+Pillow
+openai
+requests

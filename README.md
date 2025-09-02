@@ -36,7 +36,7 @@ pip install -r requirements.txt
 ```
 ### **3. Setup credentials**
 
-Copy .env.example to .env and fill in your Reddit API credentials.
+Copy .env.example to .env and fill in your Reddit API and OpenAI credentials.
 
 ### **4. Run script**
 

@@ -7,6 +7,8 @@ import io
 import requests
 import json
 import re
+import time
+import base64
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from typing import List
@@ -19,12 +21,14 @@ import yfinance as yf
 import backtrader as bt
 from dotenv import load_dotenv
 from PIL import Image
+from openai import OpenAI
 
-# Local imports
-from graph import get_data
 
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 load_dotenv()
+api_key = os.getenv("OPENAI")
+
+client = OpenAI(api_key=api_key)
 
 reddit = praw.Reddit(
     client_id=os.getenv("PRAW_CLIENT_ID"),
@@ -47,18 +51,26 @@ class SubmissionInfo:
     position: str
 
 
+checked_tickers = {}
+
+
 def check_ticker(ticker: str) -> bool:
+    if ticker in checked_tickers:
+        return checked_tickers[ticker]
+
     try:
         stock = yf.Ticker(ticker)
-        info = stock.info
-
-        if not info or 'symbol' not in info:
+        hist = stock.history(period="1d")
+        if hist.empty:
             print(
                 f"Error: Ticker {ticker} not found or no market data available.")
+            checked_tickers[ticker] = False
             return False
+        checked_tickers[ticker] = True
         return True
     except Exception as e:
         print(f"Unexpected error occurred for ticker {ticker}: {e}")
+        checked_tickers[ticker] = False
         return False
 
 
@@ -83,12 +95,13 @@ def extract_data(text, title: bool) -> SubmissionInfo:
         position = ""
     return SubmissionInfo(tickers=updated_tickers, position=position)
 
+
 class Strategy(bt.Strategy):
     params = (
-        ('stock_ticker', ''), 
-        ('position', 0),       
+        ('stock_ticker', ''),
+        ('position', 0),
         ('sell_percentage', 0.08),  # Percentage change to close position
-        ('max_days', 30),  
+        ('max_days', 30),
     )
 
     def log(self, txt, dt=None):
@@ -121,36 +134,109 @@ class Strategy(bt.Strategy):
                     self.buy(size=self.broker.getcash() // self.dataclose[0])
                     self.entry_price = self.dataclose[0]
                     self.buy_date = self.datas[0].datetime.date(0)
-                    self.log(f'Bought at {self.entry_price:.2f} on {self.buy_date}')
+                    self.log(
+                        f'Bought at {self.entry_price:.2f} on {self.buy_date}')
                 elif self.p.position == 'C':  # Short position
                     self.sell(size=self.broker.getcash() // self.dataclose[0])
                     self.entry_price = self.dataclose[0]
                     self.buy_date = self.datas[0].datetime.date(0)
-                    self.log(f'Short sold at {self.entry_price:.2f} on {self.buy_date}')
+                    self.log(
+                        f'Short sold at {self.entry_price:.2f} on {self.buy_date}')
                 else:
                     self.log('Invalid position')
         else:
-            days_since_buy = (self.datas[0].datetime.date(0) - self.buy_date).days
-            price_change_up = self.dataclose[0] >= self.entry_price * (1 + self.p.sell_percentage)
-            price_change_down = self.dataclose[0] <= self.entry_price * (1 - self.p.sell_percentage)
+            days_since_buy = (
+                self.datas[0].datetime.date(0) - self.buy_date).days
+            price_change_up = self.dataclose[0] >= self.entry_price * (
+                1 + self.p.sell_percentage)
+            price_change_down = self.dataclose[0] <= self.entry_price * (
+                1 - self.p.sell_percentage)
 
             if price_change_up or price_change_down or days_since_buy >= self.p.max_days:
-                if self.p.position == 'P':  
-                    self.sell()  
-                    self.log(f'Sold at {self.dataclose[0]:.2f} after {days_since_buy} days')
-                elif self.p.position == 'C':  
-                    self.buy()  
-                    self.log(f'Covered Short at {self.dataclose[0]:.2f} after {days_since_buy} days')
+                if self.p.position == 'P':
+                    self.sell()
+                    self.log(
+                        f'Sold at {self.dataclose[0]:.2f} after {days_since_buy} days')
+                elif self.p.position == 'C':
+                    self.buy()
+                    self.log(
+                        f'Covered Short at {self.dataclose[0]:.2f} after {days_since_buy} days')
 
                 self.entry_price = None
                 self.buy_date = None
                 self.close()
+
+def process_with_retry(img):
+    max_retries = 3
+    wait_seconds = 10
+    for attempt in range(max_retries):
+        try:
+            return process(img)
+        except Exception as e:
+            if getattr(e, "code", "") == "rate_limit_exceeded":
+                print(f"Rate limited on attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    print(f"Waiting {wait_seconds} seconds before retrying...")
+                    time.sleep(wait_seconds)
+                    wait_seconds *= 2  
+                else:
+                    print("Max retries reached. Falling back to OCR.")
+                    text = pytesseract.image_to_string(img)
+                    return extract_data(text, False)
+            else:
+                raise
+
+            
+def process(img: Image.Image) -> SubmissionInfo:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    image_bytes = buf.getvalue()
+    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini", 
+        messages=[
+            {
+                "role": "system",
+                "content": "You are a financial data parser. Extract option positions from screenshots."
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Extract tickers and whether the position is a Call or Put. Return JSON only."},
+                    {"type": "image_url", "image_url": {
+                        "url": f"data:image/png;base64,{image_b64}"}}
+                ]
+            }
+        ],
+        max_tokens=500
+    )
+
+    print(response.choices[0].message.content)
+    message_content = response.choices[0].message.content
+    
+    try:
+        data_list = json.loads(message_content)
+    except json.JSONDecodeError as e:
+        print("Failed to decode JSON:", e)
+        print("Raw GPT output:", message_content)
+        return SubmissionInfo(tickers=[], position="")
+
+    tickers = [item["ticker"] for item in data_list if "ticker" in item]
+    position = data_list[0]["position"] if data_list and "position" in data_list[0] else ""
+
+    return SubmissionInfo(tickers=tickers, position=position)
+
+
+
 def scrape():
     json_data = []
     subreddit = reddit.subreddit("wallstreetbets")
     for submission in subreddit.search(query=f'flair:"YOLO"', sort="new", limit=None, time_filter='month'):
         image_url = submission.url
         submission_data = None
+        print(f"URL: {submission.url}\n")
+
         if submission.url.endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp')):
             try:
                 r = requests.get(image_url, headers=headers)
@@ -158,13 +244,13 @@ def scrape():
                 print("No image found")
             if r:
                 img = Image.open(io.BytesIO(r.content))
-                text = pytesseract.image_to_string(img)
+                submission_data = process_with_retry(img)
                 img.close()
-                submission_data = extract_data(text, False)
         else:
             submission_data = extract_data(submission.title, True)
 
         if submission_data:
+            print("submission data: ", submission_data)
             for ticker in submission_data.tickers:
                 entry = {
                     "date": datetime.fromtimestamp(submission.created_utc).strftime('%Y-%m-%d'),
@@ -172,8 +258,6 @@ def scrape():
                     "position": submission_data.position
                 }
                 json_data.append(entry)
-        print(f"URL: {submission.url}\n")
-            
     folder_path = './monthly_data'
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
@@ -185,7 +269,8 @@ def scrape():
         os.remove(oldest_file_path)
 
     one_month_ago = datetime.now() - timedelta(days=32)
-    filename = os.path.join(folder_path, f'{one_month_ago.strftime("%Y-%m-%d")}.json')
+    filename = os.path.join(
+        folder_path, f'{one_month_ago.strftime("%Y-%m-%d")}.json')
     with open(filename, 'w') as file:
         json.dump(json_data, file, indent=4)
     ticker_count = {}
@@ -202,14 +287,15 @@ def scrape():
         else:
             ticker_count[key] = 1
     return ticker_count
-        
+
+
 def main():
     ticker_info = scrape()
     top_ticker = max(ticker_info, key=ticker_info.get)
     print("The most common position was: ", top_ticker)
     start_date = (datetime.now() - timedelta(days=31)).strftime('%Y-%m-%d')
     start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
-    new_date_obj = start_date_obj + timedelta(days=31)  
+    new_date_obj = start_date_obj + timedelta(days=31)
     new_date = new_date_obj.strftime('%Y-%m-%d')
 
     data = yf.download(top_ticker[0], start=start_date, end=new_date)
@@ -227,7 +313,8 @@ def main():
 
     cerebro.broker.setcash(10000.0)
     print('Starting Portfolio Value: %.2f' % cerebro.broker.getvalue())
-    cerebro.addstrategy(Strategy, stock_ticker=top_ticker[0], position=top_ticker[1])
+    cerebro.addstrategy(
+        Strategy, stock_ticker=top_ticker[0], position=top_ticker[1])
     cerebro.run()
     print('Final Portfolio Value: %.2f' % cerebro.broker.getvalue())
     cerebro.plot()
